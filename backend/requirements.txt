@@ -1,0 +1,31 @@
+# Core FastAPI dependencies
+fastapi==0.115.5
+uvicorn[standard]==0.34.0
+python-multipart==0.0.18
+
+# Database
+sqlalchemy==2.0.36
+alembic==1.14.0
+
+# HTTP client for external APIs
+httpx==0.28.1
+requests==2.32.3
+
+# Environment variables
+python-dotenv==1.0.1
+
+# Data validation and serialization
+pydantic==2.10.3
+pydantic-settings==2.7.0
+
+# CORS support
+fastapi-cors==0.0.6
+
+# Date/time handling
+python-dateutil==2.9.0
+
+# Development dependencies
+pytest==8.3.4
+pytest-asyncio==0.25.0
+black==24.10.0
+flake8==7.1.1
