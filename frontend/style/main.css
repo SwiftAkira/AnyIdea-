@@ -1,3 +1,20 @@
+.form{
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh; 
+    background-color: #1c0101;
+}
+
+input[type="text"] {
+  padding: 0.75em 1em;
+  font-size: 1rem;
+  border-radius: 8px;
+  border: 1px solid #ccc;
+  text-align: center;
+  width: 300px;
+  box-sizing: border-box;
+}
 .question {
     opacity: 0;
     font-size: 1rem;
