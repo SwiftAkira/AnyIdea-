@@ -23,6 +23,7 @@ from app.models.schemas import (
 from app.services.openrouter_service import openrouter_service
 from app.services.weather_service import weather_service
 from app.services.database_service import database_service
+from app.services.places_service import places_service
 from app.database import get_db, init_database, check_database_health
 
 # Configure logging
@@ -178,6 +179,76 @@ async def get_activity_suggestions(
                 ai_reasoning=ai_response.get("reasoning")
             )
             suggestions.append(suggestion)
+        
+        # Add location-based venue suggestions if location is provided
+        if location_data and location_data.get("allow_location_access") and places_service.is_available():
+            try:
+                # Determine budget level from request
+                budget_level = "moderate"
+                if request.budget <= 0:
+                    budget_level = "free"
+                elif request.budget <= 20:
+                    budget_level = "low"
+                elif request.budget <= 50:
+                    budget_level = "moderate"
+                else:
+                    budget_level = "high"
+                
+                # Get venue suggestions for different activity types
+                venue_types = []
+                if request.activity_preferences and request.activity_preferences.activity_types:
+                    activity_type_mapping = {
+                        "entertainment": "entertainment",
+                        "exercise": "exercise", 
+                        "food": "food",
+                        "productive": "learning",
+                        "creative": "culture",
+                        "learning": "learning",
+                        "social": "entertainment"
+                    }
+                    
+                    for activity_type in request.activity_preferences.activity_types:
+                        mapped_type = activity_type_mapping.get(str(activity_type).lower())
+                        if mapped_type and mapped_type not in venue_types:
+                            venue_types.append(mapped_type)
+                
+                # Default to food and entertainment if no specific types
+                if not venue_types:
+                    venue_types = ["food", "entertainment"]
+                
+                # Get venues for each activity type
+                for venue_type in venue_types[:2]:  # Limit to 2 types to avoid too many suggestions
+                    venues = await places_service.get_activity_venues(
+                        latitude=location_data["latitude"],
+                        longitude=location_data["longitude"],
+                        activity_type=venue_type,
+                        budget_level=budget_level,
+                        radius=5000
+                    )
+                    
+                    # Convert venues to suggestions
+                    for venue in venues[:3]:  # Limit to 3 venues per type
+                        location_suggestion = ActivitySuggestion(
+                            type="location_based",
+                            title=f"Visit {venue.get('name', 'Local Venue')}",
+                            description=f"Check out this {venue_type} venue nearby: {venue.get('vicinity', 'Local area')}",
+                            time_required=request.time_available,
+                            cost=venue.get("price_level", 0) * 15.0,  # Rough cost estimate
+                            difficulty="easy",
+                            instructions=[f"Head to {venue.get('name')}", "Enjoy your visit!"],
+                            materials_needed=[],
+                            address=venue.get("vicinity"),
+                            rating=venue.get("rating"),
+                            hours=venue.get("opening_hours", {}),
+                            distance=None  # Could calculate if needed
+                        )
+                        suggestions.append(location_suggestion)
+                
+                logger.info(f"Added {len([s for s in suggestions if s.type == 'location_based'])} location-based suggestions")
+                
+            except Exception as e:
+                logger.warning(f"Failed to get location-based suggestions: {e}")
+                # Don't fail the whole request if location services fail
         
         # Create weather info
         weather_info = None
@@ -636,12 +707,62 @@ async def get_location_services():
         "status": "available",
         "services": {
             "weather": weather_service.is_available(),
-            "places": settings.google_places_api_key != "",
+            "places": places_service.is_available(),
             "yelp": settings.yelp_api_key != ""
         },
         "weather_configured": weather_service.is_available(),
+        "places_configured": places_service.is_available(),
         "message": "Location services ready"
     }
+
+
+@app.get("/api/location/nearby")
+async def get_nearby_venues(
+    latitude: float,
+    longitude: float,
+    activity_type: str = "food",
+    budget_level: str = "moderate",
+    radius: int = 5000
+):
+    """
+    Get nearby venues for testing the Places API integration.
+    
+    This endpoint allows direct testing of the Google Places integration
+    for debugging and development purposes.
+    """
+    try:
+        if not places_service.is_available():
+            raise HTTPException(
+                status_code=503,
+                detail="Google Places API not configured"
+            )
+        
+        venues = await places_service.get_activity_venues(
+            latitude=latitude,
+            longitude=longitude,
+            activity_type=activity_type,
+            budget_level=budget_level,
+            radius=radius
+        )
+        
+        return {
+            "venues": venues,
+            "count": len(venues),
+            "search_params": {
+                "latitude": latitude,
+                "longitude": longitude,
+                "activity_type": activity_type,
+                "budget_level": budget_level,
+                "radius": radius
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting nearby venues: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get nearby venues: {str(e)}"
+        )
 
 
 @app.get("/api/ai-suggest")

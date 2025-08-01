@@ -6,8 +6,10 @@ import asyncio
 import httpx
 import json
 from typing import Dict, Any
+import pytest
 
 
+@pytest.mark.asyncio
 async def test_activities_endpoints():
     """Test all the new activities-related endpoints."""
     base_url = "http://localhost:8000"
