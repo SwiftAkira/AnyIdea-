@@ -28,7 +28,8 @@ class OpenRouterService:
         time_available: int,
         location_data: Optional[Dict[str, Any]] = None,
         weather_data: Optional[Dict[str, Any]] = None,
-        preferences: Optional[Dict[str, Any]] = None
+        preferences: Optional[Dict[str, Any]] = None,
+        custom_categories: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
         Generate AI-powered activity suggestions using OpenRouter.
@@ -39,6 +40,7 @@ class OpenRouterService:
             location_data: User location information
             weather_data: Current weather data
             preferences: User preferences
+            custom_categories: Custom activity categories provided by user
             
         Returns:
             Dictionary containing AI suggestions and metadata
@@ -50,7 +52,8 @@ class OpenRouterService:
                 time_available=time_available,
                 location_data=location_data,
                 weather_data=weather_data,
-                preferences=preferences
+                preferences=preferences,
+                custom_categories=custom_categories
             )
             
             # Prepare the API request
@@ -90,7 +93,8 @@ class OpenRouterService:
         time_available: int,
         location_data: Optional[Dict[str, Any]] = None,
         weather_data: Optional[Dict[str, Any]] = None,
-        preferences: Optional[Dict[str, Any]] = None
+        preferences: Optional[Dict[str, Any]] = None,
+        custom_categories: Optional[List[str]] = None
     ) -> str:
         """Build a structured prompt for the AI."""
         
@@ -109,6 +113,12 @@ class OpenRouterService:
                 prompt_parts.append(f"I'm interested in: {types}.")
             if preferences.get("mood"):
                 prompt_parts.append(f"My current mood/goal: {preferences['mood']}.")
+        
+        # Handle custom categories
+        if custom_categories:
+            custom_types = ", ".join(custom_categories)
+            prompt_parts.append(f"I'm also interested in these custom activity types: {custom_types}.")
+            prompt_parts.append("Please consider these custom categories when making suggestions.")
         
         if weather_data:
             prompt_parts.append(f"Current weather: {weather_data.get('current', 'unknown')}.")

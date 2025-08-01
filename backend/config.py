@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     
     # Database
     database_url: str = Field(default="sqlite:///./anyidea.db", env="DATABASE_URL")
+    database_path: str = Field(default="./data/anyidea.db", env="DATABASE_PATH")
+    database_echo: bool = Field(default=False, env="DATABASE_ECHO")  # Log SQL queries
     
     # API Keys
     openrouter_api_key: str = Field(default="", env="OPENROUTER_API_KEY")

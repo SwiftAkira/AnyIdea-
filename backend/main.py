@@ -1,9 +1,10 @@
 """
 Main FastAPI application for AnyIdea? backend.
 """
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.orm import Session
 import logging
 from datetime import datetime
 
@@ -14,10 +15,15 @@ from app.models.schemas import (
     ErrorResponse,
     ActivitySuggestion,
     WeatherInfo,
-    AIMetadata
+    AIMetadata,
+    ActivitiesResponse,
+    ActivityCategory,
+    CustomActivityRequest
 )
 from app.services.openrouter_service import openrouter_service
 from app.services.weather_service import weather_service
+from app.services.database_service import database_service
+from app.database import get_db, init_database, check_database_health
 
 # Configure logging
 logging.basicConfig(
@@ -51,6 +57,14 @@ async def startup_event():
     logger.info("Starting AnyIdea? API server...")
     logger.info(f"Environment: {settings.environment}")
     logger.info(f"Log level: {settings.log_level}")
+    
+    # Initialize database
+    try:
+        init_database()
+        logger.info("Database initialized successfully")
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        raise
 
 
 @app.on_event("shutdown")
@@ -96,7 +110,11 @@ async def health_check():
 
 
 @app.post("/api/suggest", response_model=SuggestionResponse)
-async def get_activity_suggestions(request: SuggestionRequest):
+async def get_activity_suggestions(
+    request: SuggestionRequest,
+    session_id: str = "anonymous",
+    db: Session = Depends(get_db)
+):
     """
     Get personalized activity suggestions based on user preferences.
     
@@ -132,13 +150,17 @@ async def get_activity_suggestions(request: SuggestionRequest):
             "mood": request.activity_preferences.mood
         }
         
+        # Extract custom categories
+        custom_categories = request.activity_preferences.custom_categories if request.activity_preferences.custom_categories else None
+        
         # Get AI suggestions
         ai_response = await openrouter_service.get_activity_suggestions(
             budget=request.budget,
             time_available=request.time_available,
             location_data=location_data,
             weather_data=weather_data,
-            preferences=preferences_data
+            preferences=preferences_data,
+            custom_categories=custom_categories
         )
         
         # Convert AI suggestions to our format
@@ -182,6 +204,58 @@ async def get_activity_suggestions(request: SuggestionRequest):
             request_id=f"req_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
         )
         
+        # Log the suggestion to database
+        try:
+            request_data = {
+                "budget": request.budget,
+                "time_available": request.time_available,
+                "location_preference": request.activity_preferences.location if request.activity_preferences else None,
+                "energy_level": request.activity_preferences.energy_level if request.activity_preferences else None,
+                "activity_types": [str(at) for at in request.activity_preferences.activity_types] if request.activity_preferences else [],
+                "custom_categories": request.activity_preferences.custom_categories if request.activity_preferences else [],
+                "mood": request.activity_preferences.mood if request.activity_preferences else None,
+                "weather_data": weather_data
+            }
+            
+            suggestions_data = [
+                {
+                    "title": s.title,
+                    "description": s.description,
+                    "type": s.type,
+                    "time_required": s.time_required,
+                    "cost": s.cost,
+                    "difficulty": s.difficulty,
+                    "instructions": s.instructions,
+                    "materials_needed": s.materials_needed,
+                    "address": s.address,
+                    "distance": s.distance,
+                    "rating": s.rating,
+                    "hours": s.hours,
+                    "weather_appropriate": s.weather_appropriate
+                }
+                for s in suggestions
+            ]
+            
+            ai_metadata_dict = {
+                "model_used": ai_metadata.model_used,
+                "reasoning": ai_metadata.reasoning,
+                "processing_time": ai_metadata.processing_time
+            }
+            
+            database_service.log_activity_suggestion(
+                session_id=session_id,
+                request_data=request_data,
+                suggestions=suggestions_data,
+                ai_metadata=ai_metadata_dict,
+                request_id=response.request_id,
+                db=db
+            )
+            logger.info(f"Logged activity suggestion to database: {response.request_id}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to log suggestion to database: {e}")
+            # Don't fail the request if logging fails
+        
         logger.info(f"Returning {len(suggestions)} suggestions")
         return response
         
@@ -193,26 +267,361 @@ async def get_activity_suggestions(request: SuggestionRequest):
         )
 
 
-@app.get("/api/activities")
+@app.get("/api/activities", response_model=ActivitiesResponse)
 async def get_available_activities():
     """
-    Get list of available activity types and categories.
+    Get list of available activity types, categories, and options.
     
-    This endpoint returns metadata about available activity types, 
-    energy levels, and other options for the frontend.
+    This endpoint returns comprehensive metadata about available activity categories,
+    types, energy levels, and other options for the frontend. It also supports
+    information about custom categories that users can input.
     """
-    return {
-        "activity_types": [
-            "creative", "productive", "entertainment", 
-            "exercise", "learning", "food", "social", 
-            "outdoor", "indoor"
-        ],
-        "energy_levels": ["low", "medium", "high"],
-        "social_levels": ["solo", "small_group", "large_group"],
-        "skill_levels": ["beginner", "intermediate", "advanced"],
-        "meal_types": ["snack", "breakfast", "lunch", "dinner", "dessert"],
-        "time_units": ["minutes", "hours"]
-    }
+    try:
+        # Define predefined activity categories with rich metadata
+        predefined_categories = [
+            ActivityCategory(
+                id="creative",
+                name="Creative & Arts",
+                description="Artistic and creative activities to express yourself",
+                icon="palette",
+                examples=["Drawing", "Painting", "Writing", "Crafting", "Photography", "Music"]
+            ),
+            ActivityCategory(
+                id="productive",
+                name="Productive & Useful",
+                description="Tasks that help you accomplish goals or improve your life",
+                icon="checkmark",
+                examples=["Organizing", "Cleaning", "Planning", "Reading", "Skill Building", "Home Improvement"]
+            ),
+            ActivityCategory(
+                id="entertainment",
+                name="Entertainment & Fun",
+                description="Activities for relaxation and enjoyment",
+                icon="play",
+                examples=["Movies", "TV Shows", "Games", "Puzzles", "YouTube", "Podcasts"]
+            ),
+            ActivityCategory(
+                id="exercise",
+                name="Exercise & Fitness",
+                description="Physical activities to stay active and healthy",
+                icon="fitness",
+                examples=["Walking", "Running", "Yoga", "Home Workouts", "Dancing", "Sports"]
+            ),
+            ActivityCategory(
+                id="learning",
+                name="Learning & Education",
+                description="Activities to expand your knowledge and skills",
+                icon="book",
+                examples=["Online Courses", "Language Learning", "Tutorials", "Research", "Reading", "Practice"]
+            ),
+            ActivityCategory(
+                id="food",
+                name="Food & Cooking",
+                description="Culinary activities and food-related experiences",
+                icon="restaurant",
+                examples=["Cooking", "Baking", "Food Delivery", "Recipes", "Meal Prep", "Food Exploration"]
+            ),
+            ActivityCategory(
+                id="social",
+                name="Social & Connection",
+                description="Activities involving interaction with others",
+                icon="people",
+                examples=["Video Calls", "Messaging", "Online Gaming", "Social Media", "Community Events"]
+            ),
+            ActivityCategory(
+                id="outdoor",
+                name="Outdoor Adventures",
+                description="Activities that take you outside and into nature",
+                icon="sunny",
+                examples=["Hiking", "Gardening", "Photography", "Sports", "Walking", "Picnics"]
+            ),
+            ActivityCategory(
+                id="indoor",
+                name="Indoor Comfort",
+                description="Cozy activities you can enjoy from the comfort of home",
+                icon="home",
+                examples=["Reading", "Gaming", "Cooking", "Movies", "Crafts", "Organizing"]
+            ),
+            ActivityCategory(
+                id="relaxation",
+                name="Rest & Relaxation",
+                description="Activities to unwind and recharge your mind and body",
+                icon="leaf",
+                examples=["Meditation", "Bath", "Napping", "Breathing Exercises", "Stretching", "Journaling"]
+            )
+        ]
+        
+        # Activity types with descriptions
+        activity_types = [
+            {"value": "creative", "label": "Creative & Arts", "description": "Express your creativity"},
+            {"value": "productive", "label": "Productive", "description": "Get things done"},
+            {"value": "entertainment", "label": "Entertainment", "description": "Have fun and relax"},
+            {"value": "exercise", "label": "Exercise", "description": "Stay active and healthy"},
+            {"value": "learning", "label": "Learning", "description": "Expand your knowledge"},
+            {"value": "food", "label": "Food & Cooking", "description": "Culinary experiences"},
+            {"value": "social", "label": "Social", "description": "Connect with others"},
+            {"value": "outdoor", "label": "Outdoor", "description": "Enjoy the outdoors"},
+            {"value": "indoor", "label": "Indoor", "description": "Stay comfortable inside"}
+        ]
+        
+        # Energy levels with descriptions
+        energy_levels = [
+            {"value": "low", "label": "Low Energy", "description": "Relaxing, minimal effort activities"},
+            {"value": "medium", "label": "Medium Energy", "description": "Moderate effort, engaging activities"},
+            {"value": "high", "label": "High Energy", "description": "Active, energetic activities"}
+        ]
+        
+        # Social levels with descriptions
+        social_levels = [
+            {"value": "solo", "label": "Solo", "description": "Activities you can do alone"},
+            {"value": "small_group", "label": "Small Group", "description": "Activities with a few friends"},
+            {"value": "large_group", "label": "Large Group", "description": "Activities with many people"}
+        ]
+        
+        # Skill levels with descriptions
+        skill_levels = [
+            {"value": "beginner", "label": "Beginner", "description": "No experience required"},
+            {"value": "intermediate", "label": "Intermediate", "description": "Some experience helpful"},
+            {"value": "advanced", "label": "Advanced", "description": "Significant experience required"}
+        ]
+        
+        response = ActivitiesResponse(
+            predefined_categories=predefined_categories,
+            activity_types=activity_types,
+            energy_levels=energy_levels,
+            social_levels=social_levels,
+            skill_levels=skill_levels,
+            supports_custom_categories=True
+        )
+        
+        logger.info(f"Returning {len(predefined_categories)} predefined categories and metadata")
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error getting activities: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to retrieve activities: {str(e)}"
+        )
+
+
+@app.post("/api/activities/custom")
+async def create_custom_activity_category(
+    request: CustomActivityRequest,
+    session_id: str = "anonymous",  # In real app, get from session/cookies
+    db: Session = Depends(get_db)
+):
+    """
+    Accept and validate a custom activity category from the user.
+    
+    This endpoint allows users to input their own activity categories
+    that aren't covered by the predefined options. The custom category
+    is stored in the database and can be used in future suggestions.
+    """
+    try:
+        logger.info(f"Received custom activity category: {request.category_name}")
+        
+        # Validate and sanitize the custom category
+        category_name = request.category_name.strip().title()
+        
+        # Check if it's too similar to existing predefined categories
+        predefined_names = [
+            "creative", "productive", "entertainment", "exercise", 
+            "learning", "food", "social", "outdoor", "indoor", "relaxation"
+        ]
+        
+        if category_name.lower() in [name.lower() for name in predefined_names]:
+            return {
+                "status": "duplicate",
+                "message": f"'{category_name}' is already available as a predefined category",
+                "suggestion": "Please choose from predefined categories or use a more specific name",
+                "accepted": False
+            }
+        
+        # Create custom category in database
+        result = database_service.create_custom_category(
+            session_id=session_id,
+            category_name=category_name,
+            description=request.description,
+            db=db
+        )
+        
+        if result["accepted"]:
+            logger.info(f"Accepted custom category: {result['category']}")
+        
+        return {
+            **result,
+            "usage_instructions": "You can now use this category in your activity preferences"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing custom category: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process custom category: {str(e)}"
+        )
+
+
+@app.get("/api/activities/custom")
+async def get_user_custom_categories(
+    session_id: str = "anonymous",
+    db: Session = Depends(get_db)
+):
+    """
+    Get all custom categories created by the user.
+    
+    This endpoint returns all active custom categories that the user
+    has created, which can be used in activity suggestions.
+    """
+    try:
+        custom_categories = database_service.get_user_custom_categories(session_id, db)
+        
+        return {
+            "custom_categories": custom_categories,
+            "count": len(custom_categories),
+            "message": f"Found {len(custom_categories)} custom categories"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting user custom categories: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get custom categories: {str(e)}"
+        )
+
+
+@app.delete("/api/activities/custom/{category_id}")
+async def delete_custom_category(
+    category_id: str,
+    session_id: str = "anonymous",
+    db: Session = Depends(get_db)
+):
+    """
+    Delete (deactivate) a custom category.
+    
+    This endpoint soft-deletes a custom category by marking it as inactive.
+    """
+    try:
+        success = database_service.deactivate_custom_category(session_id, category_id, db)
+        
+        if success:
+            return {
+                "status": "deleted",
+                "message": f"Custom category '{category_id}' has been deleted",
+                "success": True
+            }
+        else:
+            return {
+                "status": "not_found",
+                "message": f"Custom category '{category_id}' not found or already deleted",
+                "success": False
+            }
+        
+    except Exception as e:
+        logger.error(f"Error deleting custom category: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to delete custom category: {str(e)}"
+        )
+
+
+@app.get("/api/user/history")
+async def get_user_history(
+    session_id: str = "anonymous",
+    limit: int = 10,
+    db: Session = Depends(get_db)
+):
+    """
+    Get user's activity suggestion history.
+    
+    This endpoint returns the user's recent activity suggestion requests
+    and can be used to show past preferences or suggest similar activities.
+    """
+    try:
+        history = database_service.get_user_activity_history(session_id, limit, db)
+        
+        return {
+            "history": history,
+            "count": len(history),
+            "limit": limit,
+            "session_id": session_id
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting user history: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get user history: {str(e)}"
+        )
+
+
+@app.get("/api/activities/popular")
+async def get_popular_activities(
+    budget_min: float = None,
+    budget_max: float = None,
+    time_min: int = None,
+    time_max: int = None,
+    limit: int = 10,
+    db: Session = Depends(get_db)
+):
+    """
+    Get popular activities based on user selections and ratings.
+    
+    This endpoint returns activities that are frequently selected by users,
+    optionally filtered by budget and time constraints.
+    """
+    try:
+        budget_range = None
+        if budget_min is not None and budget_max is not None:
+            budget_range = (budget_min, budget_max)
+        
+        time_range = None
+        if time_min is not None and time_max is not None:
+            time_range = (time_min, time_max)
+        
+        popular_activities = database_service.get_popular_activities(
+            budget_range=budget_range,
+            time_range=time_range,
+            limit=limit,
+            db=db
+        )
+        
+        return {
+            "popular_activities": popular_activities,
+            "count": len(popular_activities),
+            "filters": {
+                "budget_range": budget_range,
+                "time_range": time_range,
+                "limit": limit
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting popular activities: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to get popular activities: {str(e)}"
+        )
+
+
+@app.get("/api/database/health")
+async def get_database_health():
+    """
+    Check database connection and status.
+    
+    This endpoint provides information about database connectivity
+    and can be used for health monitoring.
+    """
+    try:
+        health_status = check_database_health()
+        return health_status
+        
+    except Exception as e:
+        logger.error(f"Error checking database health: {e}")
+        return {
+            "status": "error",
+            "message": f"Failed to check database health: {str(e)}"
+        }
 
 
 @app.get("/api/location")

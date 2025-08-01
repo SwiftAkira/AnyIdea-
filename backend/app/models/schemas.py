@@ -85,6 +85,7 @@ class ActivityPreferences(BaseModel):
     activity_types: List[ActivityType] = Field(default=[], description="Preferred activity types")
     energy_level: EnergyLevel = Field(default=EnergyLevel.MEDIUM, description="Energy level")
     mood: str = Field(default="", description="Current mood or goal")
+    custom_categories: List[str] = Field(default=[], description="Custom activity categories entered by user")
 
 
 class SuggestionRequest(BaseModel):
@@ -138,6 +139,31 @@ class SuggestionResponse(BaseModel):
     ai_metadata: Optional[AIMetadata] = Field(None, description="AI processing metadata")
     total_suggestions: int = Field(..., description="Total number of suggestions")
     request_id: Optional[str] = Field(None, description="Request identifier for tracking")
+
+
+class ActivityCategory(BaseModel):
+    """Activity category model."""
+    id: str = Field(..., description="Category identifier")
+    name: str = Field(..., description="Display name for category")
+    description: str = Field(..., description="Category description")
+    icon: Optional[str] = Field(None, description="Icon identifier for UI")
+    examples: List[str] = Field(default=[], description="Example activities in this category")
+
+
+class CustomActivityRequest(BaseModel):
+    """Request model for custom activity category."""
+    category_name: str = Field(..., min_length=1, max_length=50, description="Custom category name")
+    description: Optional[str] = Field(None, max_length=200, description="Optional description")
+
+
+class ActivitiesResponse(BaseModel):
+    """Response model for activities endpoint."""
+    predefined_categories: List[ActivityCategory] = Field(..., description="Predefined activity categories")
+    activity_types: List[Dict[str, str]] = Field(..., description="Available activity types with descriptions")
+    energy_levels: List[Dict[str, str]] = Field(..., description="Available energy levels")
+    social_levels: List[Dict[str, str]] = Field(..., description="Available social preferences")
+    skill_levels: List[Dict[str, str]] = Field(..., description="Available skill levels")
+    supports_custom_categories: bool = Field(default=True, description="Whether custom categories are supported")
 
 
 class ErrorResponse(BaseModel):
